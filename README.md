@@ -2,16 +2,20 @@
 
 A milter for postfix that encrypts emails. 
 
-Results may vary, as MIME is a pathetic, fragile, and ambigiously defined encoding.
+Results may vary, as MIME is pathetic, fragile, and ambigiously defined.
+
 
 ## Disclaimer
 This software may be illegal in the united states as it passes private
-communications through trapdoor encryption.
+communications through a trapdoor encryption operation.
+
 
 ## TODO
 + Better mime supportt
 + don't re-ecrypt encrypted messages
 + encrypt headers
++ In band key registration
+
 
 ## Dependencies
 * libmilter (part of sendmail) http://www.sendmail.org/
@@ -20,13 +24,15 @@ communications through trapdoor encryption.
 
 ## Install
 
+    autoreconf
+    automake
     ./configure
     make
     make install
 
 Or if you're on Gentoo:
     USE="git" emerge -uN layman
-    layman -s
+    layman -S
     layman -a emery
     emerge mail-filter/pgpmilter
 
@@ -36,9 +42,9 @@ Add a line like this to /etc/postfix/main.cf
 
     smtpd_milters = inet:localhost:8989
 
-Start pgpmilter like this:
+Start pgp_milter like this:
 
-    ./pgpmilter -p inet:8989
+    ./pgp_milter -p inet:8989
 
 The user that is running the milter should have keys for email
 recipients it it's gpg keyring. If the milter can't get a key for
