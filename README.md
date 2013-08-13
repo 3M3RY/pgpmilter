@@ -2,8 +2,16 @@
 
 A milter for postfix that encrypts emails. 
 
-Or it would be if MIME wasn't so arcane and patheticly fragile.
+Results may vary, as MIME is a pathetic, fragile, and ambigiously defined encoding.
 
+## Disclaimer
+This software may be illegal in the united states as it passes private
+communications through trapdoor encryption.
+
+## TODO
++ Better mime supportt
++ don't re-ecrypt encrypted messages
++ encrypt headers
 
 ## Dependencies
 * libmilter (part of sendmail) http://www.sendmail.org/

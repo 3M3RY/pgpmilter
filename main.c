@@ -33,20 +33,8 @@
 # define FALSE	0
 #endif /* ! bool */
 
-#define MAX_RECIPIENTS 128
-#define BUF_SIZE 999
-
-#define BODY_HEAD \
-"--PGP-Milter\n"\
-"Content-Type: application/pgp-encrypted\n"\
-"\n"\
-"Version: 1\n"\
-"\n"\
-"--PGP-Milter\n"\
-"Content-Type: application/octet-stream\n"\
-"\n"
-
-#define BODY_HEAD_LEN 119
+#define MAX_RECIPIENTS 32
+#define BUF_SIZE 512
 
 #define BODY_TAIL "\n--PGP-Milter--\n"
 #define BODY_TAIL_LEN 16
@@ -56,8 +44,6 @@ struct mlfiPriv {
   gpgme_key_t keys[MAX_RECIPIENTS];
   int key_index;
   gpgme_data_t plain, cipher;
-  char	*mlfi_fname;
-  FILE	*mlfi_fp;
 };
 
 #define MLFIPRIV	((struct mlfiPriv *) smfi_getpriv(ctx))
@@ -66,217 +52,213 @@ extern sfsistat		mlfi_cleanup(SMFICTX *);
 
 sfsistat
 fail_from_gpgme(gpgme_error_t err) {
-    fprintf(stderr, "GPGME error: %s:%s", 
-            gpgme_strsource(err), gpgme_strerror(err));
-    return SMFIS_TEMPFAIL;
+  fprintf(stderr, "GPGME error: %s:%s", 
+          gpgme_strsource(err), gpgme_strerror(err));
+  return SMFIS_TEMPFAIL;
 }
 
 sfsistat
 mlfi_connect(SMFICTX *ctx, char *hostname, _SOCK_ADDR *hostaddr) {
-    struct mlfiPriv *priv;
-    gpgme_error_t err;
+  struct mlfiPriv *priv;
+  gpgme_error_t err;
+  
+  /* allocate some private memory */
+  priv = malloc(sizeof *priv);
+  if (priv == NULL) {
+    /* can't accept this message right now */
+    return SMFIS_TEMPFAIL;
+  }
+  memset(priv, '\0', sizeof *priv);
+  
+  /* save the private data */
+  smfi_setpriv(ctx, priv);
     
-    /* allocate some private memory */
-    priv = malloc(sizeof *priv);
-    if (priv == NULL) {
-      /* can't accept this message right now */
-      return SMFIS_TEMPFAIL;
-    }
-    memset(priv, '\0', sizeof *priv);
-
-    /* save the private data */
-    smfi_setpriv(ctx, priv);
+  err = gpgme_new(&priv->gpgctx);
+  if (err) 
+    fail_from_gpgme(err);
+  gpgme_set_armor(priv->gpgctx, 1);
     
-    err = gpgme_new(&priv->gpgctx);
-    if (err) 
-        fail_from_gpgme(err);
-    gpgme_set_armor(priv->gpgctx, 1);
-    
-    /* continue processing */
-    return SMFIS_CONTINUE;
+  /* continue processing */
+  return SMFIS_CONTINUE;
 }
 
 
 sfsistat
 mlfi_envrcpt(SMFICTX *ctx, char **argv) {
-    struct mlfiPriv *priv = MLFIPRIV;
-    gpgme_error_t err;
-    char *recipient;
-
-    if (priv->key_index == MAX_RECIPIENTS)
-      return SMFIS_REJECT;
-
-    recipient = argv[0]+1;
-
-    recipient[strlen(recipient) - 1] = '\0';
-
-    fprintf(stderr, "recipient: %s\n", recipient);
+  struct mlfiPriv *priv = MLFIPRIV;
+  gpgme_error_t err;
+  char *recipient;
+  
+  if (priv->key_index == MAX_RECIPIENTS)
+    return SMFIS_REJECT;
+  
+  recipient = argv[0]+1;
+  recipient[strlen(recipient) - 1] = '\0';
         
-    err = gpgme_get_key(priv->gpgctx, recipient, &priv->keys[priv->key_index], 0);
-    if (!err) 
-        priv->key_index++;
-
-    return SMFIS_CONTINUE;
+  err = gpgme_get_key(priv->gpgctx, recipient, &priv->keys[priv->key_index], 0);
+  if (!err) 
+    priv->key_index++;
+  
+  return SMFIS_CONTINUE;
 }
 
 sfsistat
 mlfi_eoh(SMFICTX *ctx) {
-    struct mlfiPriv *priv = MLFIPRIV;
-    gpgme_error_t err;
-
-    if (priv->keys[0] == NULL)
-        return SMFIS_CONTINUE;
-
-    err = gpgme_data_new(&priv->plain);
-    if (err)
-        fail_from_gpgme(err);
-
+  struct mlfiPriv *priv = MLFIPRIV;
+  gpgme_error_t err;
+  
+  if (priv->keys[0] == NULL)
     return SMFIS_CONTINUE;
+  
+  err = gpgme_data_new(&priv->plain);
+  if (err)
+    fail_from_gpgme(err);
+  
+  return SMFIS_CONTINUE;
 }
 
 sfsistat
 mlfi_body(SMFICTX *ctx, unsigned char *bodyp, size_t bodylen) {
-        struct mlfiPriv *priv = MLFIPRIV;
+  struct mlfiPriv *priv = MLFIPRIV;
+  
+  if (priv->plain == NULL)
+    return SMFIS_CONTINUE;
+  
+  //priv->keys[priv->key_index] = NULL;
 
-        if (priv->plain == NULL)
-          return SMFIS_CONTINUE;
-
-        //priv->keys[priv->key_index] = NULL;
-
-        ssize_t len;
-        gpgme_error_t err;
-
-        len = gpgme_data_write(priv->plain, bodyp, bodylen);
-        fprintf(stderr, "read %d bytes\n", len);
-        if (len == -1) {
-          fail_from_gpgme(gpgme_error_from_errno(errno));
-          fprintf(stderr, "error pushing body to gpgme buffer: %s:%s\n",
-                  gpgme_strsource(err), gpgme_strerror(err));
-        }
-	return SMFIS_CONTINUE;
+  ssize_t len;
+  gpgme_error_t err;
+  
+  len = gpgme_data_write(priv->plain, bodyp, bodylen);
+  if (len == -1) {
+    fail_from_gpgme(gpgme_error_from_errno(errno));
+    fprintf(stderr, "error pushing body to gpgme buffer: %s:%s\n",
+            gpgme_strsource(err), gpgme_strerror(err));
+  }
+  return SMFIS_CONTINUE;
 }
 
 sfsistat
 mlfi_eom(SMFICTX *ctx) {
-    struct mlfiPriv *priv = MLFIPRIV;
-    gpgme_error_t err;
-    int ret;
-    char buf[BUF_SIZE];
-    gpgme_encrypt_result_t result;
-
-    if (priv->keys[0] == NULL)
-        return SMFIS_CONTINUE;
-
-    ret = gpgme_data_seek(priv->plain, 0, SEEK_SET);
-    if (ret)
-        return fail_from_gpgme(gpgme_err_code_from_errno(errno));
-
-    err = gpgme_data_new(&priv->cipher);
-    if (err) {
-      fprintf(stderr, "error creating ciphertext buffer: %s:%s\n",
-              gpgme_strsource(err), gpgme_strerror(err));
-    }
-
-    err = gpgme_op_encrypt(priv->gpgctx, priv->keys, GPGME_ENCRYPT_ALWAYS_TRUST,
-                           priv->plain, priv->cipher);
-    if (err) {
+  struct mlfiPriv *priv = MLFIPRIV;
+  gpgme_error_t err;
+  int ret;
+  char buf[BUF_SIZE];
+  gpgme_encrypt_result_t result;
+  
+  if (priv->keys[0] == NULL)
+    return SMFIS_CONTINUE;
+  
+  ret = gpgme_data_seek(priv->plain, 0, SEEK_SET);
+  if (ret)
+    return fail_from_gpgme(gpgme_err_code_from_errno(errno));
+  
+  err = gpgme_data_new(&priv->cipher);
+  if (err) {
+    fprintf(stderr, "error creating ciphertext buffer: %s:%s\n",
+            gpgme_strsource(err), gpgme_strerror(err));
+  }
+  
+  err = gpgme_op_encrypt(priv->gpgctx, priv->keys, GPGME_ENCRYPT_ALWAYS_TRUST,
+                         priv->plain, priv->cipher);
+  if (err) {
       fprintf(stderr, "error encrypting gpgme buffer: %s:%s\n",
               gpgme_strsource(err), gpgme_strerror(err));
-    }
-
-    result = gpgme_op_encrypt_result (priv->gpgctx);
-    if (result->invalid_recipients) {
-        fprintf (stderr, "Invalid recipient encountered: %s\n",
-                 result->invalid_recipients->fpr);
-        exit (1);
-    }
-    
-    ret = gpgme_data_seek(priv->cipher, 0, SEEK_SET);
-    if (ret)
-        return fail_from_gpgme(gpgme_err_code_from_errno(errno));
-
-    smfi_addheader(ctx, "Mime-Version",  "1.0");
-
-    smfi_addheader(ctx, "Content-Type", "multipart/encrypted; boundary=\"PGP-Milter\"; protocol=\"application/pgp-encrypted\"");
-
-    smfi_replacebody(ctx, BODY_HEAD, BODY_HEAD_LEN);
-
-    while ((ret = gpgme_data_read(priv->cipher, buf, BUF_SIZE)) > 0)
-        smfi_replacebody(ctx, buf, ret);
-    if (ret < 0)
-        return fail_from_gpgme(gpgme_err_code_from_errno(errno));  
-    
-    smfi_replacebody(ctx, BODY_TAIL, BODY_TAIL_LEN);
-
-    return SMFIS_CONTINUE;
-    //return mlfi_cleanup(ctx);
+  }
+  
+  result = gpgme_op_encrypt_result (priv->gpgctx);
+  if (result->invalid_recipients) {
+    fprintf (stderr, "Invalid recipient encountered: %s\n",
+             result->invalid_recipients->fpr);
+    exit (1);
+  }
+  
+  ret = gpgme_data_seek(priv->cipher, 0, SEEK_SET);
+  if (ret)
+    return fail_from_gpgme(gpgme_err_code_from_errno(errno));
+  
+  smfi_addheader(ctx, "Mime-Version",  "1.0");
+  smfi_replacebody(ctx, "Content-Type: multipart/encrypted; boundary=\"PGP_Milter\";\n  protocol=\"application/pgp-encrypted\"\n\n", 98);
+  smfi_replacebody(ctx, "--PGP_Milter\n", 13);
+  smfi_replacebody(ctx, "Content-Type: application/pgp-encrypted\n\n", 41);
+  smfi_replacebody(ctx, "Version: 1\n\n", 12);
+  smfi_replacebody(ctx, "--PGP_Milter\n", 13);
+  smfi_replacebody(ctx, "Content-Type: application/octet-stream\n\n", 40);
+  
+  while ((ret = gpgme_data_read(priv->cipher, buf, BUF_SIZE)) > 0)
+    smfi_replacebody(ctx, buf, ret);
+  if (ret < 0)
+    return fail_from_gpgme(gpgme_err_code_from_errno(errno));  
+  
+  smfi_replacebody(ctx, "\n--PGP_Milter--\n", 16);
+  
+  return mlfi_cleanup(ctx);
 }
 
 sfsistat
 mlfi_abort(SMFICTX *ctx) {
-	return mlfi_cleanup(ctx);
+  return mlfi_cleanup(ctx);
 }
 
 sfsistat
 mlfi_cleanup(SMFICTX *ctx) {
-    struct mlfiPriv *priv = MLFIPRIV;
-
-    if (priv == NULL)
-        return SMFIS_CONTINUE;
-
-    mlfi_close(ctx);
-
-    /* return status */
+  struct mlfiPriv *priv = MLFIPRIV;
+  
+  if (priv == NULL)
     return SMFIS_CONTINUE;
+  
+  mlfi_close(ctx);
+  
+  return SMFIS_CONTINUE;
 }
 
 mlfi_close(SMFICTX *ctx) {
-    struct mlfiPriv *priv = MLFIPRIV;
-    int i;
+  struct mlfiPriv *priv = MLFIPRIV;
+  int i;
+  
+  if (priv == NULL)
+    return SMFIS_CONTINUE;
 
-    if (priv == NULL)
-        return SMFIS_CONTINUE;
-
-    for (i = 0; priv->keys[i]; i++)
-      gpgme_key_unref(priv->keys[i]);
-
+  for (i = 0; priv->keys[i]; i++)
+    gpgme_key_unref(priv->keys[i]);
+  
     if (priv->plain != NULL)
-        gpgme_data_release(priv->plain);
+      gpgme_data_release(priv->plain);
     if (priv->cipher != NULL)
-        gpgme_data_release(priv->cipher);
+      gpgme_data_release(priv->cipher);
 
     if (priv->gpgctx != NULL)
-        gpgme_release(priv->gpgctx);
-
+      gpgme_release(priv->gpgctx);
+    
     free(priv);
     smfi_setpriv(ctx, NULL);
     return SMFIS_CONTINUE;
 }
 
 struct smfiDesc smfilter =
-{
-	"GPG_Filter",	// filter name
-	SMFI_VERSION,	// version code -- do not change
-	SMFIF_ADDHDRS|SMFIF_CHGBODY,	// flags
-	mlfi_connect,  	// connection info filter
-	NULL,	        // SMTP HELO command filter
-        NULL,	        // envelope sender filter
-	mlfi_envrcpt,	// envelope recipient filter
-	NULL,           // header filter
-	mlfi_eoh,	// end of header
-	mlfi_body,	// body block filter
-	mlfi_eom,	// end of message
-	mlfi_abort,	// message aborted
-	mlfi_close,	// connection cleanup
-        NULL,   	// unknown SMTP commands
-	NULL,    	// DATA command
-	NULL     	// Once, at the start of each SMTP connection
-};
+  {
+    "GPG_Filter",	// filter name
+    SMFI_VERSION,	// version code -- do not change
+    SMFIF_ADDHDRS|SMFIF_CHGBODY,	// flags
+    mlfi_connect,  	// connection info filter
+    NULL,	        // SMTP HELO command filter
+    NULL,	        // envelope sender filter
+    mlfi_envrcpt,	// envelope recipient filter
+    NULL,           // header filter
+    mlfi_eoh,	// end of header
+    mlfi_body,	// body block filter
+    mlfi_eom,	// end of message
+    mlfi_abort,	// message aborted
+    mlfi_close,	// connection cleanup
+    NULL,   	// unknown SMTP commands
+    NULL,    	// DATA command
+    NULL     	// Once, at the start of each SMTP connection
+  };
 
 static void
 usage(char *prog) {
-	fprintf(stderr,
-		"Usage: %s -p socket-addr [-t timeout] \n", prog);
+  fprintf(stderr,
+          "Usage: %s -p socket-addr [-t timeout] \n", prog);
 }
 
 int
