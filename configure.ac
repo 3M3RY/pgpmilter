@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([pgp-milter], [0.1], [emery@hyperboria.ca])
+AC_INIT([pgpmilter], [0.2], [emery@hyperboria.ca])
 AC_CONFIG_SRCDIR([main.c])
 AC_CONFIG_HEADERS([config.h])
 

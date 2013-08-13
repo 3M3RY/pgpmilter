@@ -3,7 +3,7 @@ AM_LDFLAGS = -pthread
 LDADD = $(GPGME_LIBS) -lmilter 
 
 
-bin_PROGRAMS = pgp_milter
-pgp_milter_SOURCES = main.c
+bin_PROGRAMS = pgpmilter
+pgpmilter_SOURCES = main.c
 
 

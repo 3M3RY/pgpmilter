@@ -24,15 +24,21 @@ communications through trapdoor encryption.
     make
     make install
 
+Or if you're on Gentoo:
+    USE="git" emerge -uN layman
+    layman -s
+    layman -a emery
+    emerge mail-filter/pgpmilter
+
 
 ## Configuration
 Add a line like this to /etc/postfix/main.cf
 
     smtpd_milters = inet:localhost:8989
 
-Start pgp_milter like this:
+Start pgpmilter like this:
 
-    ./pgp_milter -p inet:8989
+    ./pgpmilter -p inet:8989
 
 The user that is running the milter should have keys for email
 recipients it it's gpg keyring. If the milter can't get a key for
