@@ -44,6 +44,9 @@ struct mlfiPriv {
   gpgme_key_t keys[MAX_RECIPIENTS];
   int key_index;
   gpgme_data_t plain, cipher;
+  char *fromaddr;
+  char *toaddr;
+  int importing;
 };
 
 #define MLFIPRIV	((struct mlfiPriv *) smfi_getpriv(ctx))
@@ -82,6 +85,13 @@ mlfi_connect(SMFICTX *ctx, char *hostname, _SOCK_ADDR *hostaddr) {
   return SMFIS_CONTINUE;
 }
 
+sfsistat mlfi_envfrom(SMFICTX *ctx, char **argv) {
+  struct mlfiPriv *priv = MLFIPRIV;
+
+  priv->fromaddr = argv[0];
+
+  return SMFIS_CONTINUE;
+}
 
 sfsistat
 mlfi_envrcpt(SMFICTX *ctx, char **argv) {
@@ -91,10 +101,16 @@ mlfi_envrcpt(SMFICTX *ctx, char **argv) {
   
   if (priv->key_index == MAX_RECIPIENTS)
     return SMFIS_REJECT;
-  
+
+  if (strncasecmp(argv[0], "<pgp-import@", 12) == 0) {
+    priv->importing = 1;
+    priv->toaddr = argv[0];
+  }
+
   recipient = argv[0]+1;
   recipient[strlen(recipient) - 1] = '\0';
-        
+
+  // This could be used to check signatures
   err = gpgme_get_key(priv->gpgctx, recipient, &priv->keys[priv->key_index], 0);
   if (!err) 
     priv->key_index++;
@@ -106,7 +122,7 @@ sfsistat
 mlfi_eoh(SMFICTX *ctx) {
   struct mlfiPriv *priv = MLFIPRIV;
   gpgme_error_t err;
-  
+
   if (priv->keys[0] == NULL)
     return SMFIS_CONTINUE;
   
@@ -124,8 +140,6 @@ mlfi_body(SMFICTX *ctx, unsigned char *bodyp, size_t bodylen) {
   if (priv->plain == NULL)
     return SMFIS_CONTINUE;
   
-  //priv->keys[priv->key_index] = NULL;
-
   ssize_t len;
   gpgme_error_t err;
   
@@ -138,26 +152,91 @@ mlfi_body(SMFICTX *ctx, unsigned char *bodyp, size_t bodylen) {
   return SMFIS_CONTINUE;
 }
 
+int
+verifykeyowner(gpgme_ctx_t ctx, char *fingerprint, char *address) {
+  gpgme_error_t err;
+  gpgme_key_t key;
+  err = gpgme_op_keylist_start(ctx, fingerprint, 0);
+  if (err)
+    return -1;
+  
+  while (!err)
+    {
+      err = gpgme_op_keylist_next(ctx, &key);
+      if (err)
+        printf("%s:", key->subkeys->keyid);
+      if (key->uids && key->uids->name)
+        printf(" %s", key->uids->name);
+      if (key->uids && key->uids->email)
+        printf (" <%s>", key->uids->email);
+      putchar('\n');
+      gpgme_key_release(key);
+    }
+  if (err != GPG_ERR_EOF)
+    return -1;
+  gpgme_op_keylist_end(ctx);
+}
+
 sfsistat
 mlfi_eom(SMFICTX *ctx) {
   struct mlfiPriv *priv = MLFIPRIV;
+  char *authen;
   gpgme_error_t err;
+  gpgme_import_result_t import_result;
+  gpgme_import_status_t key_status;
   int ret;
   char buf[BUF_SIZE];
-  gpgme_encrypt_result_t result;
-  
+  gpgme_encrypt_result_t encrypt_result;
+
+  authen = smfi_getsymval(ctx, "{auth_authen}");
+
+
+  if (priv->importing) {
+    if (authen == NULL) {
+        return SMFIS_REJECT;
+    }
+
+    smfi_chgfrom(ctx, priv->toaddr, NULL);
+    smfi_delrcpt(ctx, priv->toaddr);
+    smfi_addrcpt(ctx, priv->fromaddr);
+
+    ret = gpgme_data_seek(priv->plain, 0, SEEK_SET);
+    if (ret)
+      return fail_from_gpgme(gpgme_err_code_from_errno(errno));
+    
+    err = gpgme_op_import(priv->gpgctx, priv->plain);
+    if (err)
+      return SMFIS_REJECT;
+
+    key_status = import_result->imports;
+    while (key_status) {
+      verifykeyowner(priv->gpgctx, key_status->fpr, priv->fromaddr);
+      key_status = key_status->next;
+    }
+    
+    if (import_result->imported)
+      sprintf(buf, "Imported %d new keys, %d unchanged.\n",
+              import_result->imported, import_result->unchanged);
+    else
+      sprintf(buf, "Recieved %d keys, but none imported.\n", 
+              import_result->considered);
+
+    smfi_replacebody(ctx, buf, strlen(buf));
+    return SMFIS_CONTINUE;
+  }
+
   if (priv->keys[0] == NULL)
     return SMFIS_CONTINUE;
-  
-  ret = gpgme_data_seek(priv->plain, 0, SEEK_SET);
-  if (ret)
-    return fail_from_gpgme(gpgme_err_code_from_errno(errno));
-  
+    
   err = gpgme_data_new(&priv->cipher);
   if (err) {
     fprintf(stderr, "error creating ciphertext buffer: %s:%s\n",
             gpgme_strsource(err), gpgme_strerror(err));
   }
+
+  ret = gpgme_data_seek(priv->plain, 0, SEEK_SET);
+  if (ret)
+    return fail_from_gpgme(gpgme_err_code_from_errno(errno));
   
   err = gpgme_op_encrypt(priv->gpgctx, priv->keys, GPGME_ENCRYPT_ALWAYS_TRUST,
                          priv->plain, priv->cipher);
@@ -166,10 +245,10 @@ mlfi_eom(SMFICTX *ctx) {
               gpgme_strsource(err), gpgme_strerror(err));
   }
   
-  result = gpgme_op_encrypt_result (priv->gpgctx);
-  if (result->invalid_recipients) {
+  encrypt_result = gpgme_op_encrypt_result(priv->gpgctx);
+  if (encrypt_result->invalid_recipients) {
     fprintf (stderr, "Invalid recipient encountered: %s\n",
-             result->invalid_recipients->fpr);
+             encrypt_result->invalid_recipients->fpr);
     exit (1);
   }
   
@@ -237,22 +316,22 @@ mlfi_close(SMFICTX *ctx) {
 
 struct smfiDesc smfilter =
   {
-    "GPG_Filter",	// filter name
+    "PGPMilter",	// filter name
     SMFI_VERSION,	// version code -- do not change
-    SMFIF_ADDHDRS|SMFIF_CHGBODY,	// flags
-    mlfi_connect,  	// connection info filter
-    NULL,	        // SMTP HELO command filter
-    NULL,	        // envelope sender filter
-    mlfi_envrcpt,	// envelope recipient filter
-    NULL,           // header filter
-    mlfi_eoh,	// end of header
-    mlfi_body,	// body block filter
-    mlfi_eom,	// end of message
-    mlfi_abort,	// message aborted
-    mlfi_close,	// connection cleanup
-    NULL,   	// unknown SMTP commands
-    NULL,    	// DATA command
-    NULL     	// Once, at the start of each SMTP connection
+    SMFIF_ADDHDRS|SMFIF_CHGFROM|SMFIF_ADDRCPT|SMFIF_DELRCPT|SMFIF_CHGBODY, // flags
+    mlfi_connect, // connection info filter
+    NULL,	  // SMTP HELO command filter
+    mlfi_envfrom, // envelope sender filter
+    mlfi_envrcpt, // envelope recipient filter
+    NULL,         // header filter
+    mlfi_eoh,	  // end of header
+    mlfi_body,	  // body block filter
+    mlfi_eom,	  // end of message
+    mlfi_abort,	  // message aborted
+    mlfi_close,	  // connection cleanup
+    NULL,   	  // unknown SMTP commands
+    NULL,    	  // DATA command
+    NULL     	  // Once, at the start of each SMTP connection
   };
 
 static void
