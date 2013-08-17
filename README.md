@@ -2,12 +2,18 @@
 
 A milter for postfix that encrypts emails. 
 
-Results may vary, as MIME is pathetic, fragile, and ambigiously defined.
+It currently encrypts emails, but does not do in such a way the mail readers seem to 
+recognize, probaly because of some sort of MIME whitespace/CR/LF bullshit.
 
 
 ## Disclaimer
 This software may be illegal in the united states as it passes private
 communications through a trapdoor encryption operation.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
 
 
 ## TODO
@@ -31,6 +37,7 @@ communications through a trapdoor encryption operation.
     make install
 
 Or if you're on Gentoo:
+
     USE="git" emerge -uN layman
     layman -S
     layman -a emery
